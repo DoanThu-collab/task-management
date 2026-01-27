@@ -49,7 +49,7 @@ Task: "${taskName}"
 });
 
 // ✅ Fallback route
-app.get("*", (_, res) => {
+app.use((req, res) => {
   res.sendFile(path.join(__dirname, "public/index.html"));
 });
 
