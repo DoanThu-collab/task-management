@@ -25,20 +25,23 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
     return res.status(400).json({ error: "Missing taskName" });
   }
 
+  // Render cannot read your local .env file, so this check is vital
   if (!process.env.OPENAI_API_KEY) {
-    return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+    console.error("❌ Missing API Key");
+    return res.status(500).json({ error: "Server missing API Key configuration" });
   }
 
   const prompt = `
-Break the task into 3–5 subtasks.
-Return ONLY valid JSON in this format:
-{ "subtasks": ["..."] }
-
-Task: "${taskName}"
-`;
+  Break the task into 3–5 subtasks.
+  Return ONLY valid JSON in this format:
+  { "subtasks": ["..."] }
+  
+  Task: "${taskName}"
+  `;
 
   try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
+    // FIX: Use the correct Chat Completions endpoint
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -46,29 +49,25 @@ Task: "${taskName}"
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        input: [
+        messages: [ // FIX: Use 'messages' instead of 'input'
           {
             role: "user",
             content: prompt
           }
-        ]
+        ],
+        response_format: { type: "json_object" } // Ensure JSON response
       })
     });
 
     const data = await response.json();
-    console.log("🧠 OpenAI raw:", JSON.stringify(data, null, 2));
-
-    const text =
-      data?.output_text ||
-      data?.output?.[0]?.content?.find(c => c.type === "output_text")?.text;
-
-    if (!text) {
-      return res.status(500).json({
-        error: "AI returned no text",
-        raw: data
-      });
+    
+    if (!response.ok) {
+        console.error("OpenAI Error:", data);
+        throw new Error(data.error?.message || "OpenAI API Error");
     }
 
+    // FIX: Correct path to extract content from OpenAI response
+    const text = data.choices[0].message.content;
     const parsed = JSON.parse(text);
 
     res.json({
