@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 
-// Import node-fetch (hỗ trợ các phiên bản nodejs cũ/mới)
+// Fix import node-fetch cho CommonJS
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
@@ -13,28 +13,26 @@ app.use(express.json());
 // =======================
 // 1. Serve Frontend
 // =======================
-// Đảm bảo bạn đã tạo folder 'public' và bỏ file index.html vào đó
 app.use(express.static(path.join(__dirname, "public")));
 
 // =======================
-// 2. AI API (Google Gemini)
+// 2. AI API (Google Gemini 1.5 Flash)
 // =======================
 app.post("/api/ai/suggest-subtasks", async (req, res) => {
   console.log("📥 Incoming request:", req.body);
   const { taskName } = req.body;
 
-  // Validate input
   if (!taskName) {
     return res.status(400).json({ error: "Missing taskName" });
   }
 
-  // Lấy API Key từ Environment Variable (Trên Render)
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    console.error("❌ Lỗi: Chưa cấu hình GEMINI_API_KEY trên Render");
-    return res.status(500).json({ error: "Server configuration error: Missing API Key" });
+    console.error("❌ ERROR: Missing GEMINI_API_KEY in Environment Variables");
+    return res.status(500).json({ error: "Server missing API Key" });
   }
 
+  // Prompt cho AI
   const prompt = `
     Break this task into 3-5 subtasks.
     Return ONLY valid JSON in this format, do not use markdown code block:
@@ -44,51 +42,55 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
   `;
 
   try {
-    // FIX: Sử dụng model 'gemini-pro' (ổn định nhất, không bị lỗi 404)
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`;
+    // FIX QUAN TRỌNG:
+    // 1. Dùng model 'gemini-1.5-flash' (Bản ổn định nhất hiện nay)
+    // 2. Dùng endpoint 'v1beta' chuẩn
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{ text: prompt }]
-          }]
-        })
-      }
-    );
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{ text: prompt }]
+        }]
+      })
+    });
 
     const data = await response.json();
 
-    // Xử lý lỗi từ Google API
+    // Log chi tiết lỗi nếu Google từ chối
     if (!response.ok) {
-        console.error("Gemini API Error:", JSON.stringify(data, null, 2));
-        throw new Error(data.error?.message || "Lỗi kết nối đến Gemini AI");
+      console.error("❌ Gemini API Error Details:", JSON.stringify(data, null, 2));
+      
+      // Check lỗi cụ thể để báo user
+      const errorMessage = data.error?.message || "Lỗi kết nối đến Gemini AI";
+      if (data.error?.code === 404) {
+        throw new Error("Model không tồn tại hoặc Key không hợp lệ. Hãy tạo Key mới tại aistudio.google.com");
+      }
+      throw new Error(errorMessage);
     }
 
-    // Lấy text trả về
+    // Lấy nội dung trả về
     let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    
-    if (!text) throw new Error("AI không trả về kết quả nào");
+    if (!text) throw new Error("AI không trả về kết quả nào (Empty response)");
 
-    // Làm sạch chuỗi JSON (xóa ```json và ``` nếu có)
+    // Làm sạch chuỗi JSON (xóa ```json ... ``` do AI hay thêm vào)
     text = text.replace(/```json/g, "").replace(/```/g, "").trim();
 
-    // Parse JSON
     const parsed = JSON.parse(text);
     console.log("✅ AI Response Success:", parsed);
 
     res.json({ subtasks: parsed.subtasks || [] });
 
   } catch (err) {
-    console.error("❌ AI ERROR:", err.message);
-    // Trả lỗi về cho Frontend biết đường hiển thị
-    res.status(500).json({ error: "Không thể tạo subtask lúc này. " + err.message });
+    console.error("❌ SERVER ERROR:", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // =======================
-// 3. Fallback Route (Chống lỗi 404 khi F5 trang)
+// 3. Fallback Route
 // =======================
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, "public/index.html"));
