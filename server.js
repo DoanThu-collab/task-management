@@ -17,62 +17,59 @@ app.use(express.static(path.join(__dirname, "public")));
 // =======================
 // AI API
 // =======================
+// Thay thế đoạn app.post cũ trong server.js bằng đoạn này:
 app.post("/api/ai/suggest-subtasks", async (req, res) => {
   console.log("📥 Incoming request:", req.body);
-
   const { taskName } = req.body;
-  if (!taskName) {
-    return res.status(400).json({ error: "Missing taskName" });
-  }
 
-  // Render cannot read your local .env file, so this check is vital
-  if (!process.env.OPENAI_API_KEY) {
-    console.error("❌ Missing API Key");
-    return res.status(500).json({ error: "Server missing API Key configuration" });
-  }
+  if (!taskName) return res.status(400).json({ error: "Missing taskName" });
+  
+  // Nhớ đổi tên biến môi trường trên Render thành GEMINI_API_KEY nhé
+  const apiKey = process.env.GEMINI_API_KEY; 
+  if (!apiKey) return res.status(500).json({ error: "Server missing GEMINI_API_KEY" });
 
   const prompt = `
-  Break the task into 3–5 subtasks.
-  Return ONLY valid JSON in this format:
-  { "subtasks": ["..."] }
-  
-  Task: "${taskName}"
+    Break this task into 3-5 subtasks.
+    Return ONLY valid JSON in this format, do not use markdown code block:
+    { "subtasks": ["subtask 1", "subtask 2", "subtask 3"] }
+    
+    Task: "${taskName}"
   `;
 
   try {
-    // FIX: Use the correct Chat Completions endpoint
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [ // FIX: Use 'messages' instead of 'input'
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
-        response_format: { type: "json_object" } // Ensure JSON response
-      })
-    });
+    // Gọi Google Gemini API qua REST (không cần cài thêm package)
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ text: prompt }]
+          }]
+        })
+      }
+    );
 
     const data = await response.json();
-    
+
     if (!response.ok) {
-        console.error("OpenAI Error:", data);
-        throw new Error(data.error?.message || "OpenAI API Error");
+        console.error("Gemini Error:", data);
+        throw new Error(data.error?.message || "Gemini API Error");
     }
 
-    // FIX: Correct path to extract content from OpenAI response
-    const text = data.choices[0].message.content;
-    const parsed = JSON.parse(text);
+    // Lấy text trả về từ Gemini
+    let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    if (!text) throw new Error("No text returned from AI");
 
-    res.json({
-      subtasks: parsed.subtasks || []
-    });
+    // Làm sạch chuỗi JSON (đôi khi AI trả về dính ```json ... ```)
+    text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+
+    const parsed = JSON.parse(text);
+    console.log("✅ AI Response:", parsed);
+
+    res.json({ subtasks: parsed.subtasks || [] });
 
   } catch (err) {
     console.error("❌ AI ERROR:", err);
