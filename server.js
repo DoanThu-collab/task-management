@@ -1,75 +1,115 @@
+/**
+ * server.js - DeepSeek API (Render compatible)
+ * --------------------------------------------
+ * Node: 18+
+ * Render: Web Service
+ */
+
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
 
-// Load environment variables if available
-try { require("dotenv").config(); } catch (e) { console.log("Production mode: Using system env vars"); }
-
-const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
-
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
 
-// --- English Fallback Data ---
-const getFallbackSubtasks = (taskName) => {
+/* ---------------- SAFE STATIC (OPTIONAL) ---------------- */
+
+const publicDir = path.join(__dirname, "public");
+app.use(express.static(publicDir));
+
+/* ---------------- FALLBACK DATA ---------------- */
+
+function getFallbackSubtasks(taskName) {
   return [
-    `Research requirements for ${taskName}`,
-    `Prepare necessary tools and resources`,
-    `Execute core steps of ${taskName}`,
-    `Review progress and finalize details`
+    `Understand requirements of ${taskName}`,
+    `Prepare tools and resources`,
+    `Execute main steps of ${taskName}`,
+    `Review and finalize ${taskName}`
   ];
-};
+}
+
+/* ---------------- AI ENDPOINT ---------------- */
 
 app.post("/api/ai/suggest-subtasks", async (req, res) => {
   const { taskName } = req.body;
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.DEEPSEEK_API_KEY;
 
-  console.log("📥 Processing task (English):", taskName);
+  console.log("📥 Incoming task:", taskName);
+
+  if (!taskName) {
+    return res.status(400).json({ error: "taskName is required" });
+  }
 
   if (!apiKey) {
-    console.warn("⚠️ No API Key found. Using fallback mode.");
+    console.warn("⚠️ DEEPSEEK_API_KEY missing → fallback");
     return res.json({ subtasks: getFallbackSubtasks(taskName) });
   }
 
   try {
-    // Standard model URL
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-    
-    const response = await fetch(url, {
+    const response = await fetch("https://api.deepseek.com/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
       body: JSON.stringify({
-        contents: [{ 
-          parts: [{ text: `You are a productivity assistant. Break this task into 3-5 logical subtasks in English. Return ONLY a valid JSON object: { "subtasks": ["step 1", "step 2"] }. Task: "${taskName}"` }] 
-        }],
-        generationConfig: {
-            response_mime_type: "application/json"
-        }
+        model: "deepseek-chat",
+        temperature: 0.3,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a productivity assistant. Always respond ONLY with valid JSON."
+          },
+          {
+            role: "user",
+            content: `
+Break the following task into 3–5 logical subtasks in English.
+Return ONLY valid JSON:
+{ "subtasks": ["step 1", "step 2"] }
+
+Task: "${taskName}"
+            `
+          }
+        ]
       })
     });
 
     const data = await response.json();
-    
+
     if (!response.ok) {
-        console.error("❌ Google API Error:", JSON.stringify(data, null, 2));
-        throw new Error("API Connection Failed"); 
+      console.error("❌ DeepSeek API Error:", data);
+      throw new Error("DeepSeek API failed");
     }
 
-    let text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-    const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-    
-    res.json({ subtasks: parsed.subtasks || [] });
+    const raw =
+      data.choices?.[0]?.message?.content?.trim() || "{}";
 
+    const clean = raw.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(clean);
+
+    res.json({
+      subtasks: Array.isArray(parsed.subtasks)
+        ? parsed.subtasks
+        : getFallbackSubtasks(taskName)
+    });
   } catch (err) {
-    console.warn("⚠️ Fallback triggered due to API error:", err.message);
-    // Returns English fallback so the UI never stays empty
+    console.warn("⚠️ AI error → fallback:", err.message);
     res.json({ subtasks: getFallbackSubtasks(taskName) });
   }
 });
 
-app.get("*", (req, res) => res.sendFile(path.join(__dirname, "public/index.html")));
+/* ---------------- FRONTEND FALLBACK ---------------- */
+
+app.get("*", (req, res) => {
+  res.send("✅ Server is running");
+});
+
+/* ---------------- START SERVER ---------------- */
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
