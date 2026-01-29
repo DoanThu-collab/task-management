@@ -1,7 +1,7 @@
 /**
  * server.js
- * Groq API + Frontend compatible
- * Render ready – Node 18+
+ * Groq AI + Frontend-safe output
+ * Render ready (Node 18+)
  */
 
 const express = require("express");
@@ -17,15 +17,38 @@ app.use(express.json());
 const publicDir = path.join(__dirname, "public");
 app.use(express.static(publicDir));
 
-/* ================= FALLBACK ================= */
+/* ================= UTILS ================= */
+
+/**
+ * Ensure subtasks is always string[]
+ * Fixes [object Object] bug
+ */
+function normalizeSubtasks(subtasks) {
+  if (!Array.isArray(subtasks)) return [];
+
+  return subtasks
+    .map(item => {
+      if (typeof item === "string") return item;
+      if (typeof item === "object" && item !== null) {
+        return (
+          item.title ||
+          item.name ||
+          item.text ||
+          JSON.stringify(item)
+        );
+      }
+      return String(item);
+    })
+    .filter(Boolean);
+}
 
 function getFallbackSubtasks(taskName) {
-  return [
+  return normalizeSubtasks([
     `Analyze task: ${taskName}`,
     `Break down requirements`,
     `Execute main steps`,
     `Review and complete`
-  ];
+  ]);
 }
 
 /* ================= AI ENDPOINT ================= */
@@ -37,16 +60,15 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
   console.log("🧠 AI Breakdown requested:", taskName);
 
   if (!taskName) {
-    console.error("❌ Missing taskName");
+    console.error("❌ taskName missing");
     return res.status(400).json({
-      error: "taskName is required",
-      subtasks: []
+      subtasks: [],
+      error: "taskName is required"
     });
   }
 
-  // Không có key → fallback (frontend vẫn chạy)
   if (!apiKey) {
-    console.warn("⚠️ GROQ_API_KEY not set → using fallback");
+    console.warn("⚠️ GROQ_API_KEY missing → fallback");
     return res.json({
       subtasks: getFallbackSubtasks(taskName),
       fallback: true
@@ -69,16 +91,11 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
             {
               role: "system",
               content:
-                "Return ONLY valid JSON in format { \"subtasks\": [] }"
+                'Return ONLY valid JSON in this format: { "subtasks": [] }'
             },
             {
               role: "user",
-              content: `
-Break this task into 3–5 actionable subtasks.
-Return JSON only.
-
-Task: "${taskName}"
-              `
+              content: `Break this task into 3–5 actionable subtasks:\n"${taskName}"`
             }
           ]
         })
@@ -103,17 +120,19 @@ Task: "${taskName}"
       throw new Error("Invalid JSON from AI");
     }
 
-    if (!Array.isArray(parsed.subtasks)) {
-      console.error("❌ AI response missing subtasks:", parsed);
-      throw new Error("AI response invalid format");
+    console.log("🧪 RAW AI subtasks:", parsed.subtasks);
+
+    const normalized = normalizeSubtasks(parsed.subtasks);
+
+    if (!normalized.length) {
+      throw new Error("AI returned empty subtasks");
     }
 
-    console.log("✅ AI subtasks generated:", parsed.subtasks.length);
-
-    return res.json({ subtasks: parsed.subtasks });
+    console.log("✅ Subtasks sent to frontend:", normalized.length);
+    return res.json({ subtasks: normalized });
 
   } catch (err) {
-    console.warn("⚠️ AI FAILED → fallback used");
+    console.warn("⚠️ AI FAILED → fallback");
     console.warn("Reason:", err.message);
 
     return res.json({
