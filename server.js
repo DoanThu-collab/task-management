@@ -1,31 +1,24 @@
 /**
- * server.js - DeepSeek API (Render compatible)
- * --------------------------------------------
- * Node: 18+
- * Render: Web Service
+ * server.js
+ * Chatbot / AI Subtask API using GROQ
+ * Render-compatible (Node 18+)
  */
 
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-/* ---------------- SAFE STATIC (OPTIONAL) ---------------- */
-
-const publicDir = path.join(__dirname, "public");
-app.use(express.static(publicDir));
-
 /* ---------------- FALLBACK DATA ---------------- */
 
 function getFallbackSubtasks(taskName) {
   return [
-    `Understand requirements of ${taskName}`,
-    `Prepare tools and resources`,
-    `Execute main steps of ${taskName}`,
-    `Review and finalize ${taskName}`
+    `Understand the task: ${taskName}`,
+    `Plan the required steps`,
+    `Execute the main work`,
+    `Review and finalize`
   ];
 }
 
@@ -33,7 +26,7 @@ function getFallbackSubtasks(taskName) {
 
 app.post("/api/ai/suggest-subtasks", async (req, res) => {
   const { taskName } = req.body;
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = process.env.GROQ_API_KEY;
 
   console.log("📥 Incoming task:", taskName);
 
@@ -41,46 +34,50 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
     return res.status(400).json({ error: "taskName is required" });
   }
 
+  // No API key → fallback (Render vẫn sống)
   if (!apiKey) {
-    console.warn("⚠️ DEEPSEEK_API_KEY missing → fallback");
+    console.warn("⚠️ GROQ_API_KEY missing → fallback mode");
     return res.json({ subtasks: getFallbackSubtasks(taskName) });
   }
 
   try {
-    const response = await fetch("https://api.deepseek.com/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        temperature: 0.3,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a productivity assistant. Always respond ONLY with valid JSON."
-          },
-          {
-            role: "user",
-            content: `
+    const response = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: "llama3-8b-8192",
+          temperature: 0.3,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a productivity assistant. Always respond ONLY with valid JSON."
+            },
+            {
+              role: "user",
+              content: `
 Break the following task into 3–5 logical subtasks in English.
-Return ONLY valid JSON:
+Return ONLY valid JSON in this format:
 { "subtasks": ["step 1", "step 2"] }
 
 Task: "${taskName}"
-            `
-          }
-        ]
-      })
-    });
+              `
+            }
+          ]
+        })
+      }
+    );
 
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("❌ DeepSeek API Error:", data);
-      throw new Error("DeepSeek API failed");
+      console.error("❌ Groq API Error:", data);
+      throw new Error("Groq API request failed");
     }
 
     const raw =
@@ -100,16 +97,15 @@ Task: "${taskName}"
   }
 });
 
-/* ---------------- FRONTEND FALLBACK ---------------- */
+/* ---------------- HEALTH CHECK ---------------- */
 
-app.get("*", (req, res) => {
-  res.send("✅ Server is running");
+app.get("/", (_, res) => {
+  res.send("✅ Groq AI server is running on Render");
 });
 
 /* ---------------- START SERVER ---------------- */
 
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Server listening on port ${PORT}`);
 });
