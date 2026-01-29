@@ -1,10 +1,3 @@
-/**
- * server.js
- * Groq AI – Bulletproof version
- * Fix JSON + text response
- * Render ready (Node 18+)
- */
-
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
@@ -20,9 +13,6 @@ app.use(express.static(publicDir));
 
 /* ================= UTILS ================= */
 
-/**
- * Normalize subtasks → always string[]
- */
 function normalizeSubtasks(subtasks) {
   if (!Array.isArray(subtasks)) return [];
 
@@ -32,33 +22,42 @@ function normalizeSubtasks(subtasks) {
       if (typeof item === "object" && item !== null) {
         return item.title || item.name || item.text || "";
       }
-      return String(item).trim();
+      return "";
     })
     .filter(Boolean);
 }
 
-/**
- * Extract subtasks from plain text (1. 2. - •)
- */
-function extractSubtasksFromText(text) {
+function extractMainSubtasks(text) {
   return text
     .split("\n")
     .map(line =>
       line
         .replace(/^\s*[\d\-•*]+[.)]?\s*/, "")
         .replace(/\*\*/g, "")
+        .replace(/:$/, "")
         .trim()
     )
-    .filter(line => line.length > 5 && line.length < 200);
+    .filter(line => {
+      if (!line) return false;
+      if (/here are|below are|following/i.test(line)) return false;
+      if (line.length > 80) return false;
+      if (line.includes(".")) return false;
+      return /^[A-Z]/.test(line);
+    });
 }
 
-function getFallbackSubtasks(taskName) {
+function enforceSubtaskLimit(subtasks, taskName) {
+  const unique = [...new Set(subtasks)];
+
+  if (unique.length >= 3 && unique.length <= 5) return unique;
+  if (unique.length > 5) return unique.slice(0, 5);
+
   return [
-    `Analyze task: ${taskName}`,
-    `Break down requirements`,
+    `Plan the task: ${taskName}`,
+    `Prepare required resources`,
     `Execute main steps`,
-    `Review and complete`
-  ];
+    `Review and finalize`
+  ].slice(0, 3);
 }
 
 /* ================= AI ENDPOINT ================= */
@@ -75,7 +74,10 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
 
   if (!apiKey) {
     console.warn("⚠️ GROQ_API_KEY missing → fallback");
-    return res.json({ subtasks: getFallbackSubtasks(taskName), fallback: true });
+    return res.json({
+      subtasks: enforceSubtaskLimit([], taskName),
+      fallback: true
+    });
   }
 
   try {
@@ -89,16 +91,30 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
         },
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
-          temperature: 0.3,
+          temperature: 0.2,
           messages: [
             {
               role: "system",
-              content:
-                "Break tasks into clear actionable subtasks."
+              content: `
+You are a task planning assistant.
+
+Your job is to break a task into 3 to 5 HIGH-LEVEL subtasks only.
+
+Rules:
+- Each subtask must be a short action phrase (5–8 words max)
+- Each subtask represents a MAIN STEP, not a detail
+- Do NOT include explanations, descriptions, or examples
+- Do NOT include sub-steps or bullet hierarchies
+- Do NOT include introductory or concluding sentences
+- Do NOT repeat the task name verbatim
+- Output must be easy to use as a checklist item
+
+Think in terms of: planning → preparation → execution → completion.
+`
             },
             {
               role: "user",
-              content: `Break the task into 3–5 subtasks:\n"${taskName}"`
+              content: `Task to break down: "${taskName}"`
             }
           ]
         })
@@ -115,32 +131,25 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
     const raw = data.choices?.[0]?.message?.content || "";
     console.log("🧪 RAW AI RESPONSE:\n", raw);
 
-    // 1️⃣ Try JSON parse
     let subtasks = [];
     try {
       const parsed = JSON.parse(raw.replace(/```json|```/g, ""));
       subtasks = normalizeSubtasks(parsed.subtasks);
     } catch {
-      // 2️⃣ Extract from text
-      console.warn("⚠️ JSON failed → extracting from text");
-      subtasks = extractSubtasksFromText(raw);
+      subtasks = extractMainSubtasks(raw);
     }
 
-    // 3️⃣ Final fallback safety
-    if (!subtasks.length) {
-      console.warn("⚠️ Extraction empty → local fallback");
-      subtasks = getFallbackSubtasks(taskName);
-    }
+    const finalSubtasks = enforceSubtaskLimit(subtasks, taskName);
+    console.log("✅ Final subtasks:", finalSubtasks);
 
-    console.log("✅ Subtasks sent:", subtasks.length);
-    return res.json({ subtasks });
+    return res.json({ subtasks: finalSubtasks });
 
   } catch (err) {
-    console.warn("⚠️ AI FAILED HARD → fallback");
+    console.warn("⚠️ AI FAILED → fallback");
     console.warn("Reason:", err.message);
 
     return res.json({
-      subtasks: getFallbackSubtasks(taskName),
+      subtasks: enforceSubtaskLimit([], taskName),
       fallback: true,
       error: err.message
     });
