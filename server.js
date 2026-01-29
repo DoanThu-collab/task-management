@@ -1,6 +1,7 @@
 /**
  * server.js
- * Groq AI + Frontend-safe output
+ * Groq AI – Bulletproof version
+ * Fix JSON + text response
  * Render ready (Node 18+)
  */
 
@@ -20,35 +21,44 @@ app.use(express.static(publicDir));
 /* ================= UTILS ================= */
 
 /**
- * Ensure subtasks is always string[]
- * Fixes [object Object] bug
+ * Normalize subtasks → always string[]
  */
 function normalizeSubtasks(subtasks) {
   if (!Array.isArray(subtasks)) return [];
 
   return subtasks
     .map(item => {
-      if (typeof item === "string") return item;
+      if (typeof item === "string") return item.trim();
       if (typeof item === "object" && item !== null) {
-        return (
-          item.title ||
-          item.name ||
-          item.text ||
-          JSON.stringify(item)
-        );
+        return item.title || item.name || item.text || "";
       }
-      return String(item);
+      return String(item).trim();
     })
     .filter(Boolean);
 }
 
+/**
+ * Extract subtasks from plain text (1. 2. - •)
+ */
+function extractSubtasksFromText(text) {
+  return text
+    .split("\n")
+    .map(line =>
+      line
+        .replace(/^\s*[\d\-•*]+[.)]?\s*/, "")
+        .replace(/\*\*/g, "")
+        .trim()
+    )
+    .filter(line => line.length > 5 && line.length < 200);
+}
+
 function getFallbackSubtasks(taskName) {
-  return normalizeSubtasks([
+  return [
     `Analyze task: ${taskName}`,
     `Break down requirements`,
     `Execute main steps`,
     `Review and complete`
-  ]);
+  ];
 }
 
 /* ================= AI ENDPOINT ================= */
@@ -60,19 +70,12 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
   console.log("🧠 AI Breakdown requested:", taskName);
 
   if (!taskName) {
-    console.error("❌ taskName missing");
-    return res.status(400).json({
-      subtasks: [],
-      error: "taskName is required"
-    });
+    return res.status(400).json({ subtasks: [] });
   }
 
   if (!apiKey) {
     console.warn("⚠️ GROQ_API_KEY missing → fallback");
-    return res.json({
-      subtasks: getFallbackSubtasks(taskName),
-      fallback: true
-    });
+    return res.json({ subtasks: getFallbackSubtasks(taskName), fallback: true });
   }
 
   try {
@@ -91,11 +94,11 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
             {
               role: "system",
               content:
-                'Return ONLY valid JSON in this format: { "subtasks": [] }'
+                "Break tasks into clear actionable subtasks."
             },
             {
               role: "user",
-              content: `Break this task into 3–5 actionable subtasks:\n"${taskName}"`
+              content: `Break the task into 3–5 subtasks:\n"${taskName}"`
             }
           ]
         })
@@ -109,30 +112,31 @@ app.post("/api/ai/suggest-subtasks", async (req, res) => {
       throw new Error(data?.error?.message || "Groq API failed");
     }
 
-    const raw = data.choices?.[0]?.message?.content || "{}";
-    const clean = raw.replace(/```json|```/g, "").trim();
+    const raw = data.choices?.[0]?.message?.content || "";
+    console.log("🧪 RAW AI RESPONSE:\n", raw);
 
-    let parsed;
+    // 1️⃣ Try JSON parse
+    let subtasks = [];
     try {
-      parsed = JSON.parse(clean);
-    } catch (e) {
-      console.error("❌ JSON parse failed:", clean);
-      throw new Error("Invalid JSON from AI");
+      const parsed = JSON.parse(raw.replace(/```json|```/g, ""));
+      subtasks = normalizeSubtasks(parsed.subtasks);
+    } catch {
+      // 2️⃣ Extract from text
+      console.warn("⚠️ JSON failed → extracting from text");
+      subtasks = extractSubtasksFromText(raw);
     }
 
-    console.log("🧪 RAW AI subtasks:", parsed.subtasks);
-
-    const normalized = normalizeSubtasks(parsed.subtasks);
-
-    if (!normalized.length) {
-      throw new Error("AI returned empty subtasks");
+    // 3️⃣ Final fallback safety
+    if (!subtasks.length) {
+      console.warn("⚠️ Extraction empty → local fallback");
+      subtasks = getFallbackSubtasks(taskName);
     }
 
-    console.log("✅ Subtasks sent to frontend:", normalized.length);
-    return res.json({ subtasks: normalized });
+    console.log("✅ Subtasks sent:", subtasks.length);
+    return res.json({ subtasks });
 
   } catch (err) {
-    console.warn("⚠️ AI FAILED → fallback");
+    console.warn("⚠️ AI FAILED HARD → fallback");
     console.warn("Reason:", err.message);
 
     return res.json({
